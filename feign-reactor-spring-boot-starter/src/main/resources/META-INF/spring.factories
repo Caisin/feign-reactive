@@ -1,0 +1,2 @@
+#autoconfig
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=reactivefeign.spring.config.ReactiveFeignAutoConfiguration

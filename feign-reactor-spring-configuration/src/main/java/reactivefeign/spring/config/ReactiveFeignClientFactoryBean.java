@@ -22,6 +22,8 @@ import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.cloud.client.ServiceInstance;
+import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.util.Assert;
@@ -32,11 +34,12 @@ import reactivefeign.ReactiveOptions;
 import reactivefeign.ReactiveRetryPolicy;
 import reactivefeign.client.ReactiveHttpRequestInterceptor;
 import reactivefeign.client.statushandler.ReactiveStatusHandler;
-//import reactivefeign.cloud.CloudReactiveFeign;
 import reactivefeign.webclient.WebReactiveOptions;
 
 import java.util.Map;
 import java.util.Objects;
+
+//import reactivefeign.cloud.CloudReactiveFeign;
 
 /**
  *
@@ -64,6 +67,8 @@ class ReactiveFeignClientFactoryBean implements FactoryBean<Object>, Initializin
 
 	private Class<?> fallbackFactory = void.class;
 
+	private LoadBalancerClient loadBalancerClient;
+
 	@Override
 	public void afterPropertiesSet() {
 		Assert.hasText(this.name, "Name must be set");
@@ -72,7 +77,12 @@ class ReactiveFeignClientFactoryBean implements FactoryBean<Object>, Initializin
 	@Override
 	public void setApplicationContext(ApplicationContext context) throws BeansException {
 		this.applicationContext = context;
-	}
+        try {
+            this.loadBalancerClient = applicationContext.getBean(LoadBalancerClient.class);
+        } catch (BeansException e) {
+            e.printStackTrace();
+        }
+    }
 
 	protected ReactiveFeignBuilder reactiveFeign(ReactiveFeignContext context) {
 		// @formatter:off
@@ -213,42 +223,52 @@ class ReactiveFeignClientFactoryBean implements FactoryBean<Object>, Initializin
 	 * @param <T> the target type of the Feign client
 	 * @return a {@link ReactiveFeign} client created with the specified data and the context information
 	 */
+	@SuppressWarnings("unchecked")
 	private <T> T getTarget() {
 		ReactiveFeignContext context = applicationContext.getBean(ReactiveFeignContext.class);
 		ReactiveFeignBuilder builder = reactiveFeign(context);
 
-		String url;
+		String temUrl;
 		if (!StringUtils.hasText(this.url)) {
 			if (!this.name.startsWith("http")) {
-				url = "http://" + this.name;
+				if (this.loadBalancerClient!=null) {
+					ServiceInstance serviceInstance = loadBalancerClient.choose(this.name);
+					if (serviceInstance==null) {
+						throw new IllegalStateException("service id "+this.name+"have not register");
+					}
+					temUrl = serviceInstance.getUri().toString();
+				}else {
+					temUrl = "http://" + this.name;
+				}
+
 			}
 			else {
-				url = this.name;
+				temUrl = this.name;
 			}
 			builder = loadBalance(builder, context);
 		} else {
 			if(!this.url.startsWith("http")){
-				url = "http://" + this.url;
+				temUrl = "http://" + this.url;
 			} else {
-				url = this.url;
+				temUrl = this.url;
 			}
 		}
-		url += cleanPath();
+		temUrl += cleanPath();
 
-		return (T) builder.target(this.type, url);
+		return (T) builder.target(this.type, temUrl);
 	}
 
 	private String cleanPath() {
-		String path = this.path.trim();
-		if (StringUtils.hasLength(path)) {
-			if (!path.startsWith("/")) {
-				path = "/" + path;
+		String retPath = this.path.trim();
+		if (StringUtils.hasLength(retPath)) {
+			if (!retPath.startsWith("/")) {
+				retPath = "/" + retPath;
 			}
-			if (path.endsWith("/")) {
-				path = path.substring(0, path.length() - 1);
+			if (retPath.endsWith("/")) {
+				retPath = retPath.substring(0, retPath.length() - 1);
 			}
 		}
-		return path;
+		return retPath;
 	}
 
 	@Override
@@ -333,13 +353,14 @@ class ReactiveFeignClientFactoryBean implements FactoryBean<Object>, Initializin
 				Objects.equals(name, that.name) &&
 				Objects.equals(path, that.path) &&
 				Objects.equals(type, that.type) &&
+				Objects.equals(loadBalancerClient, that.loadBalancerClient) &&
 				Objects.equals(url, that.url);
 	}
 
 	@Override
 	public int hashCode() {
 		return Objects.hash(applicationContext, decode404, fallback, fallbackFactory,
-				name, path, type, url);
+				name, path, type, url,loadBalancerClient);
 	}
 
 	@Override
